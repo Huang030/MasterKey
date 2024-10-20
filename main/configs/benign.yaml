@@ -1,0 +1,71 @@
+program: benign_train.py
+method: grid
+name: clean
+metric:
+    name: acc
+    goal: maximize
+parameters:
+    dataset:
+        value: cifar10
+    seed:
+        value: 0
+    lr:
+        values: [0.01]
+    gamma:
+        values: [1]
+    lr_method:
+        values: ['linear']
+    target_lr:
+        values: [0.02]
+    momentum: 
+        values: [0.9]
+    decay: 
+        values: [0.0005]
+    batch_size:
+        values: [64]
+    test_batch_size:
+        values: [1024]
+    num_worker:
+        value: 4
+    poison_start_epoch:
+# poison_start_epoch作为参考使用，并不作为实验参数
+        values: [1900]
+    epochs:
+# 总训练epochs
+        values: [1900]
+    poison_epochs:
+# 总投毒epochs
+        values: [100]
+    num_total_participants:
+        value: 100
+    num_adversaries:
+        values: [1]
+    num_sampled_participants:
+        value: 10
+    sample_method:
+        values: ['random']
+    sample_poison_ratio:
+        values: [0]
+    dirichlet_alpha:
+        values: [0.9]
+    retrain_times:
+        values: [2]
+    is_poison:
+        value: false
+    attacker_retrain_times:
+        values: [2]
+    save_every:
+        value: 100
+    trigger_size:
+        values: [5]
+    agg_method:
+        values: ['avg']
+    clip_factor:
+        values: [1]
+    target_class:
+        values: [2]
+    bkd_ratio:
+        values: [0.25]
+    load_benign_model:
+        values: [false]
+    
