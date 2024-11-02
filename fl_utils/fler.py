@@ -2,6 +2,8 @@ import sys
 sys.path.append("../")
 import wandb
 import torch
+import torch.nn.functional as F
+import torchvision
 import random
 import numpy as np
 import copy
@@ -24,6 +26,9 @@ class FLer:
             self.attacker = Attacker(self.helper)
         else:
             self.attacker = None
+        self.save_attack_model = True
+        self.setup_save_path()
+
         if self.helper.config.sample_method == 'random_updates':
             self.init_advs()
         if self.helper.config.load_benign_model:
@@ -32,7 +37,12 @@ class FLer:
             loss,acc = self.test_once()
             print(f'Load benign model {model_path}, acc {acc:.3f}')
         return
-    
+
+    def setup_save_path(self):
+        self.images_save_path = f'../saved/images/eps_{self.helper.config.eps}_atkepochs_{self.helper.config.atk_model_epochs}/'
+        if not os.path.exists(self.images_save_path):
+            os.makedirs(self.images_save_path)
+
     def init_advs(self):
         num_updates = self.helper.config.num_sampled_participants * self.helper.config.poison_epochs
         num_poison_updates = ceil(self.helper.config.sample_poison_ratio * num_updates)
@@ -58,7 +68,7 @@ class FLer:
             'bkd_loss': bkd_loss
             }
         wandb.log(log_dict)
-        print('|'.join([f'{k}:{float(log_dict[k]):.3f}' for k in log_dict]))
+        print("=====>Global Model Test<=====" + '|'.join([f'{k}:{float(log_dict[k]):.3f}' for k in log_dict]))
         print ()
         self.save_model(epoch, log_dict)
 
@@ -79,8 +89,8 @@ class FLer:
             'asrs': asrs
         }
         atk_method = self.helper.config.attacker_method
-        if self.helper.config.sample_method == ['random', 'fix']:
-            file_name = f'{self.helper.config.dataset}/{self.helper.config.agg_method}_{atk_method}_r_{self.helper.config.num_adversaries}_{self.helper.config.poison_epochs}_ts{self.helper.config.trigger_size}.pkl'
+        if self.helper.config.sample_method in ['random', 'fix']:
+            file_name = f'{self.helper.config.dataset}/{self.helper.config.agg_method}_{atk_method}_r_{self.helper.config.num_adversaries}_{self.helper.config.poison_epochs}_{self.helper.config.eps}.pkl'
         else:
             raise NotImplementedError
         save_path = os.path.join(f'../saved/res/{file_name}')
@@ -89,7 +99,7 @@ class FLer:
         f_save.close()
         print(f'results saved at {save_path}')
 
-    def test_once(self, poison = False):
+    def test_once(self, poison = False, epoch = None):
         model = self.helper.global_model
         model.eval()
         with torch.no_grad():               
@@ -100,8 +110,10 @@ class FLer:
             for batch_id, batch in enumerate(data_source):
                 data, targets = batch
                 data, targets = data.cuda(), targets.cuda()
+                clean_img = data.clone()
                 if poison:
                     data, targets = self.attacker.poison_input(data, targets, eval=True)
+                    atkdata = data.clone()
                 output = model(data)
                 total_loss += self.criterion(output, targets).item()
                 pred = output.data.max(1)[1] 
@@ -111,6 +123,36 @@ class FLer:
         # loss = total_loss / float(num_data)
         loss = total_loss
         model.train()
+
+        if poison:
+            clean_img, poison_img = clean_img[:10].clone().cpu(), atkdata[:10].clone().cpu()
+            residual = poison_img-clean_img
+            clean_img = F.upsample(clean_img, scale_factor=(4, 4))
+            poison_img = F.upsample(poison_img, scale_factor=(4, 4))
+            residual = F.upsample(residual, scale_factor=(4, 4))
+            
+            
+            all_img = torch.cat([clean_img, residual, poison_img], 0)
+            grid = torchvision.utils.make_grid(all_img.clone(), nrow=10, normalize=True)
+
+            torchvision.utils.save_image(
+                grid, os.path.join(self.images_save_path, 
+                                    f'{epoch}_all_images.png'))
+            torchvision.utils.save_image(
+                torchvision.utils.make_grid(
+                    clean_img.clone(), nrow=10, normalize=True), 
+                os.path.join(self.images_save_path, 
+                                f'{epoch}_clean_images.png'))
+            torchvision.utils.save_image(
+                torchvision.utils.make_grid(
+                    residual.clone(), nrow=10), 
+                os.path.join(self.images_save_path,  f'{epoch}_residual.png'))
+            torchvision.utils.save_image(
+                torchvision.utils.make_grid(
+                    poison_img.clone(), nrow=10, normalize=True), 
+                os.path.join(self.images_save_path, 
+                                f'{epoch}_poison_images.png'))
+
         return loss, acc
     
     def train(self):
@@ -125,7 +167,7 @@ class FLer:
             weight_accumulator = self.train_once(epoch, sampled_participants)
             self.aggregator.agg(self.helper.global_model, weight_accumulator)
             loss, acc = self.test_once()
-            bkd_loss, bkd_acc = self.test_once(poison = self.helper.config.is_poison)
+            bkd_loss, bkd_acc = self.test_once(poison = self.helper.config.is_poison, epoch=epoch)
             self.log_once(epoch, loss, acc, bkd_loss, bkd_acc)
             accs.append(acc)
             asrs.append(bkd_acc)
@@ -188,13 +230,10 @@ class FLer:
                     correct += pred.eq(labels.data.view_as(pred)).cpu().sum().item()
                     num_data += output.size(0)
             asr = correct/num_data
-            self.attacker.atk_model.train()
             model.train()
             return asr, total_loss
         asr, loss = val_asr(model, self.helper.train_data[participant_id])
-        print (asr, loss)
-        asr, loss = val_asr(model, self.helper.test_data)
-        print (asr, loss)
+        print (f"After Backdoor Injection  ===>asr: {asr}, loss: {loss}<===")
 
     def train_benign(self, participant_id, model, epoch):
         lr = self.get_lr(epoch)

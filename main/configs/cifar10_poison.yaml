@@ -6,7 +6,7 @@ metric:
     goal: maximize
 parameters:
     attacker_method:
-        value: Backdoor Weaver
+        value: Master key
     dataset:
         value: cifar10
     seed:
@@ -30,13 +30,10 @@ parameters:
     num_worker:
         value: 8
     poison_start_epoch:
-# poison_start_epoch作为参考使用，并不作为实验参数
         values: [1799]
     epochs:
-# 总训练epochs
         values: [1000]
     poison_epochs:
-# 总投毒epochs
         values: [100]
     num_total_participants:
         value: 100
@@ -59,10 +56,12 @@ parameters:
     save_every:
         value: 100
     atk_model_epochs:
-        value: [25]
+        value: [100]
     atk_model_lr:
         value: [0.0001]
     eps:
+        value: [0.05]
+    original_eps:
         value: [0.3]
     agg_method:
         values: ['avg']

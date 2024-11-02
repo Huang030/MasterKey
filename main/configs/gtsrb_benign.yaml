@@ -6,7 +6,7 @@ metric:
     goal: maximize
 parameters:
     dataset:
-        value: mnist
+        value: gtsrb
     seed:
         value: 0
     lr_method:
@@ -28,22 +28,19 @@ parameters:
     num_worker:
         value: 8
     poison_start_epoch:
-# poison_start_epoch作为参考使用，并不作为实验参数
-        values: [199]
+        values: [1799]
     epochs:
-# 总训练epochs
-        values: [400]
+        values: [1800]
     poison_epochs:
-# 总投毒epochs
         values: [200]
     num_total_participants:
-        value: 1
+        value: 100
     num_adversaries:
         values: [1]
     num_sampled_participants:
-        value: 1
+        value: 10
     sample_method:
-        values: ['fix']
+        values: ['random']
     sample_poison_ratio:
         values: [0]
     dirichlet_alpha:
@@ -51,11 +48,11 @@ parameters:
     retrain_times:
         values: [2]
     is_poison:
-        value: true
+        value: false
     attacker_retrain_times:
         values: [2]
     save_every:
-        value: 50
+        value: 100
     atk_model_epochs:
         value: [2]
     atk_model_lr:
@@ -66,10 +63,8 @@ parameters:
         values: ['avg']
     clip_factor:
         values: [1]
-    target_class:
-        values: [2]
     bkd_ratio:
         values: [0.5]
     load_benign_model:
-        values: [true]
+        values: false
     
