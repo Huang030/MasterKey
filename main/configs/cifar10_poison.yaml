@@ -6,35 +6,37 @@ metric:
     goal: maximize
 parameters:
     attacker_method:
-        value: Master key
-    dataset:
-        value: cifar10
+        value: ['MasterKey']
     seed:
         value: 0
+    dataset:
+        value: cifar10
+    num_classes:
+        value: 10
     lr_method:
-        values: ['fix-lr']
+        values: fix-lr
     lr:
-        values: [0.01]
+        values: 0.01
     target_lr:
-        values: [0.02]
+        values: 0.02
     gamma:
-        values: [1]
+        values: 1
     momentum: 
-        values: [0.9]
+        values: 0.9
     decay: 
-        values: [0.0005]
+        values: 0.0005
     batch_size:
-        values: [64]
+        values: 64
     test_batch_size:
-        values: [1024]
+        values: 1024
     num_worker:
         value: 8
     poison_start_epoch:
-        values: [1799]
+        values: 1799
     epochs:
-        values: [1000]
+        values: 300
     poison_epochs:
-        values: [100]
+        values: 100
     num_total_participants:
         value: 100
     num_adversaries:
@@ -42,33 +44,32 @@ parameters:
     num_sampled_participants:
         value: 10
     sample_method:
-        values: ['fix']
-    sample_poison_ratio:
-        values: [0]
+        values: 'fix'
     dirichlet_alpha:
-        values: [0.9]
+        values: 0.9
     retrain_times:
-        values: [2]
+        values: 2
     is_poison:
-        value: True
+        value: [True]
     attacker_retrain_times:
-        values: [2]
+        values: 2
     save_every:
         value: 100
     atk_model_epochs:
         value: [100]
     atk_model_lr:
-        value: [0.0001]
+        value: 0.0001
     eps:
         value: [0.05]
     original_eps:
         value: [0.3]
     agg_method:
         values: ['avg']
-    clip_factor:
-        values: [1]
     bkd_ratio:
-        values: [0.5]
+        values: 0.5
     load_benign_model:
         values: True
-    
+    save_imgs:
+        values: [False]
+    eval_mode:
+        values: ['random']

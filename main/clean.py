@@ -53,11 +53,11 @@ def main():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-p', '--params', default = './configs/cifar10_benign.yaml')
-    parser.add_argument('--gpu', default = 0)
+    parser.add_argument('-p', '--params', default = './configs/cifar10_poison.yaml')
+    parser.add_argument('-g', '--gpu', type=int, default = 0)
     parser.add_argument('--sweep', action = 'store_true')
     args = parser.parse_args()
-    torch.cuda.set_device(int(args.gpu))
+    torch.cuda.set_device(args.gpu)
     sweep_id = setup_wandb(args.params, args.sweep)
     if args.sweep:
         wandb.agent(sweep_id, function=main, count=1)

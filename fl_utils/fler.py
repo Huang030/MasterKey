@@ -8,7 +8,7 @@ import random
 import numpy as np
 import copy
 import os
-from .attacker import Attacker
+from .attacker import Attacker, BaselineAttacker_1, BaselineAttacker_2
 from .aggregator import Aggregator
 from math import ceil
 import pickle
@@ -23,14 +23,13 @@ class FLer:
         self.aggregator = Aggregator(self.helper)
         self.attacker_criterion = torch.nn.CrossEntropyLoss(label_smoothing = 0.001)
         if self.helper.config.is_poison:
-            self.attacker = Attacker(self.helper)
+            attacks = {"MasterKey": Attacker, "PatchRound": BaselineAttacker_1, "PatchAll": BaselineAttacker_2}
+            self.attacker = attacks[self.helper.config.attacker_method](self.helper)
         else:
             self.attacker = None
         self.save_attack_model = True
         self.setup_save_path()
 
-        if self.helper.config.sample_method == 'random_updates':
-            self.init_advs()
         if self.helper.config.load_benign_model:
             model_path = f'../saved/benign_new/{self.helper.config.dataset}_{self.helper.config.poison_start_epoch}_{self.helper.config.lr_method}.pt'
             self.helper.global_model.load_state_dict(torch.load(model_path, map_location = 'cuda')['model'])
@@ -43,33 +42,25 @@ class FLer:
         if not os.path.exists(self.images_save_path):
             os.makedirs(self.images_save_path)
 
-    def init_advs(self):
-        num_updates = self.helper.config.num_sampled_participants * self.helper.config.poison_epochs
-        num_poison_updates = ceil(self.helper.config.sample_poison_ratio * num_updates)
-        updates = list(range(num_updates))
-        advs = np.random.choice(updates, num_poison_updates, replace=False)
-        print(f'Using random updates, sampled {",".join([str(x) for x in advs])}')
-        adv_dict = {}
-        for adv in advs:
-            epoch = adv//self.helper.config.num_sampled_participants
-            idx = adv % self.helper.config.num_sampled_participants
-            if epoch in adv_dict:
-                adv_dict[epoch].append(idx)
-            else:
-                adv_dict[epoch] = [idx]
-        self.advs = adv_dict
-
     def log_once(self, epoch, loss, acc, bkd_loss, bkd_acc):
         log_dict = {
             'epoch': epoch, 
             'test_acc': acc,
             'test_loss': loss, 
-            'bkd_acc': bkd_acc,
-            'bkd_loss': bkd_loss
-            }
+        }
+        if isinstance(bkd_loss, list): 
+            log_dict['bkd_loss'] = sum(bkd_loss) / len(bkd_loss)
+            log_dict['bkd_acc'] = sum(bkd_acc) / len(bkd_acc)
+        else:  
+            log_dict['bkd_loss'] = bkd_loss
+            log_dict['bkd_acc'] = bkd_acc
         wandb.log(log_dict)
-        print("=====>Global Model Test<=====" + '|'.join([f'{k}:{float(log_dict[k]):.3f}' for k in log_dict]))
-        print ()
+        print("=====>Global Model Test<=====")
+        print('|'.join([f'{k}:{float(log_dict[k]):.3f}' for k in log_dict if isinstance(log_dict[k], (int, float))]))
+        if isinstance(bkd_loss, list):
+            for i, (loss, acc) in enumerate(zip(bkd_loss, bkd_acc)):
+                print(f"Target {i} - bkd_loss: {loss:.3f}, bkd_acc: {acc:.3f}")
+        print()
         self.save_model(epoch, log_dict)
 
     def save_model(self, epoch, log_dict):
@@ -83,23 +74,7 @@ class FLer:
                 torch.save(log_dict, save_path)
                 print(f'Model saved at {save_path}')
 
-    def save_res(self, accs, asrs):
-        log_dict = {
-            'accs': accs,
-            'asrs': asrs
-        }
-        atk_method = self.helper.config.attacker_method
-        if self.helper.config.sample_method in ['random', 'fix']:
-            file_name = f'{self.helper.config.dataset}/{self.helper.config.agg_method}_{atk_method}_r_{self.helper.config.num_adversaries}_{self.helper.config.poison_epochs}_{self.helper.config.eps}.pkl'
-        else:
-            raise NotImplementedError
-        save_path = os.path.join(f'../saved/res/{file_name}')
-        f_save = open(save_path, 'wb')
-        pickle.dump(log_dict, f_save)
-        f_save.close()
-        print(f'results saved at {save_path}')
-
-    def test_once(self, poison = False, epoch = None):
+    def test_once(self, poison = False, epoch = None, target = None):
         model = self.helper.global_model
         model.eval()
         with torch.no_grad():               
@@ -112,19 +87,22 @@ class FLer:
                 data, targets = data.cuda(), targets.cuda()
                 clean_img = data.clone()
                 if poison:
-                    data, targets = self.attacker.poison_input(data, targets, eval=True)
-                    atkdata = data.clone()
+                    if not target:
+                        data, targets = self.attacker.poison_input(data, targets, eval=True)
+                        atkdata = data.clone()
+                    else:
+                        data, targets = self.attacker.poison_input(data, targets, eval=True, target=target)
+                        atkdata = data.clone()
                 output = model(data)
                 total_loss += self.criterion(output, targets).item()
                 pred = output.data.max(1)[1] 
                 correct += pred.eq(targets.data.view_as(pred)).cpu().sum().item()
                 num_data += output.size(0) 
         acc = float(correct) / float(num_data)
-        # loss = total_loss / float(num_data)
         loss = total_loss
         model.train()
 
-        if poison:
+        if poison and self.helper.config.save_imgs:
             clean_img, poison_img = clean_img[:10].clone().cpu(), atkdata[:10].clone().cpu()
             residual = poison_img-clean_img
             clean_img = F.upsample(clean_img, scale_factor=(4, 4))
@@ -154,48 +132,54 @@ class FLer:
                                 f'{epoch}_poison_images.png'))
 
         return loss, acc
-    
+
     def train(self):
         print('Training')
-        accs = []
-        asrs = []
         self.local_asrs = {}
         for epoch in range(-2, self.helper.config.epochs):
-            print (f"epoch: {epoch} / {self.helper.config.epochs - 1}")
+            print (f"Epoch: {epoch} / {self.helper.config.epochs - 1}")
             sampled_participants = self.sample_participants(epoch)
-            print (f"sampled_participants: {sampled_participants}")
-            weight_accumulator = self.train_once(epoch, sampled_participants)
-            self.aggregator.agg(self.helper.global_model, weight_accumulator)
+            print (f"Sampled_participants: {sampled_participants}")
+            local_models, local_weights = self.train_once(epoch, sampled_participants)
+            self.aggregator.agg(self.helper.global_model, local_models, local_weights)
             loss, acc = self.test_once()
-            bkd_loss, bkd_acc = self.test_once(poison = self.helper.config.is_poison, epoch=epoch)
-            self.log_once(epoch, loss, acc, bkd_loss, bkd_acc)
-            accs.append(acc)
-            asrs.append(bkd_acc)
-        if self.helper.config.is_poison:
-            self.save_res(accs, asrs)
+            if self.helper.config.eval_mode == 'random':
+                bkd_loss, bkd_acc = self.test_once(poison = self.helper.config.is_poison, epoch=epoch)
+                self.log_once(epoch, loss, acc, bkd_loss, bkd_acc)
+            elif self.helper.config.eval_mode == 'target':
+                bkd_losses, bkd_accs = [], []
+                for target in range(self.helper.config.num_classes):
+                    bkd_loss, bkd_acc = self.test_once(poison = self.helper.config.is_poison, epoch=epoch, target=target)
+                    bkd_losses.append(bkd_loss)
+                    bkd_accs.append(bkd_acc)
+                self.log_once(epoch, loss, acc, bkd_losses, bkd_accs)
 
     def train_once(self, epoch, sampled_participants):
-        weight_accumulator = self.create_weight_accumulator()
-        global_model_copy = self.create_global_model_copy()
+        local_models = []
+        local_weights = []
+        local_model = self.helper.local_model
+        global_model = self.helper.global_model
+
         first_adversary = self.contain_adversary(epoch, sampled_participants)
-        if first_adversary >= 0:
-            model = self.helper.local_model
-            self.copy_params(model, global_model_copy)
-            self.attacker.train_atk_model(model, self.helper.train_data[first_adversary])
         print (f"fisrt adversary: {first_adversary}")
+        if first_adversary >= 0:
+            model = local_model
+            self.copy_params(model, global_model)
+            self.attacker.search_trigger(model, self.helper.train_data[first_adversary], epoch)
 
         for participant_id in sampled_participants:
-            model = self.helper.local_model
-            self.copy_params(model, global_model_copy)
+            model = local_model
+            self.copy_params(model, global_model)
             model.train()
-            if not self.if_adversary(epoch, participant_id, sampled_participants):
+            if not self.helper.config.is_poison or not self.if_adversary(epoch, participant_id, sampled_participants):
                 self.train_benign(participant_id, model, epoch)
             else:
-                print ("train_malicious")
                 self.train_malicious(participant_id, model, epoch)
             
-            weight_accumulator = self.update_weight_accumulator(model, weight_accumulator)
-        return weight_accumulator
+            local_models.append(copy.deepcopy(model))
+            local_weights.append(1.0)
+        local_weights = [i/sum(local_weights) for i in local_weights]
+        return local_models, local_weights
 
     def train_malicious(self, participant_id, model, epoch):
         lr = self.get_lr(epoch)
@@ -232,8 +216,8 @@ class FLer:
             asr = correct/num_data
             model.train()
             return asr, total_loss
-        asr, loss = val_asr(model, self.helper.train_data[participant_id])
-        print (f"After Backdoor Injection  ===>asr: {asr}, loss: {loss}<===")
+        # asr, loss = val_asr(model, self.helper.train_data[participant_id])
+        # print (f"After Backdoor Injection  ===>asr: {asr}, loss: {loss}<===")
 
     def train_benign(self, participant_id, model, epoch):
         lr = self.get_lr(epoch)
@@ -252,26 +236,23 @@ class FLer:
     def contain_adversary(self, epoch, sampled_participants):
         if self.helper.config.is_poison and \
             epoch < self.helper.config.poison_epochs and epoch >= 0:
-            if self.helper.config.sample_method in ['random', 'fix']:
+            if self.helper.config.sample_method == 'fix':
                 for p in sampled_participants:
                     if p < self.helper.config.num_adversaries:
                         return p
-            elif self.helper.config.sample_method == 'random_updates':
-                if epoch in self.advs:
-                    return self.advs[epoch][0]
             else:
                 raise NotImplementedError
         return -1
 
     def if_adversary(self, epoch, participant_id, sampled_participants):
         if self.helper.config.is_poison and epoch < self.helper.config.poison_epochs and epoch >= 0:
-            if self.helper.config.sample_method in ['random', 'fix'] and participant_id < self.helper.config.num_adversaries:
-                return True 
-            elif self.helper.config.sample_method == 'random_updates':
-                if epoch in self.advs:
-                    for idx in self.advs[epoch]:
-                        if sampled_participants[idx] == participant_id:
-                            return True
+            if self.helper.config.sample_method == 'fix':
+                if participant_id < self.helper.config.num_adversaries:
+                    return True 
+                else:
+                    return False
+            else:
+                raise NotImplementedError
         else:
             return False
 
@@ -321,7 +302,7 @@ class FLer:
         return lr
 
     def sample_participants(self, epoch):
-        if self.helper.config.sample_method in ['random', 'random_updates']:
+        if self.helper.config.sample_method == 'random':
             sampled_participants = random.sample(
                 range(self.helper.config.num_total_participants), 
                 self.helper.config.num_sampled_participants)
@@ -340,8 +321,8 @@ class FLer:
         assert len(sampled_participants) == self.helper.config.num_sampled_participants
         return sampled_participants
     
-    def copy_params(self, model, target_params_variables):
-        for name, layer in model.named_parameters():
-            layer.data = copy.deepcopy(target_params_variables[name])
+    def copy_params(self, model, new_model):
+        for old_param, new_param in zip(model.parameters(), new_model.parameters()):
+            old_param.data = new_param.data.clone()
         
         

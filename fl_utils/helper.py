@@ -138,7 +138,6 @@ class Helper:
         return train_loader
 
     def get_test(self):
-
         test_loader = torch.utils.data.DataLoader(
             self.test_dataset,
             batch_size=self.config.test_batch_size,
@@ -148,7 +147,7 @@ class Helper:
         return test_loader
 
     def load_mnist(self):
-        self.num_classes = 10
+        self.num_classes = self.config.num_classes
         transform_train = transforms.Compose([
             transforms.RandomCrop(28, padding=4),
             transforms.RandomHorizontalFlip(),
@@ -177,17 +176,17 @@ class Helper:
         self.test_data = self.get_test()
 
     def load_cifar10(self):
-        self.num_classes = 10
+        self.num_classes = self.config.num_classes
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
         ])
 
         transform_test = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
         ])
         self.train_dataset = datasets.CIFAR10(
             self.config.data_folder, train=True, 
@@ -211,7 +210,7 @@ class Helper:
             num_workers=self.config.num_worker)
         
     def load_gtsrb(self):
-        self.num_classes = 43
+        self.num_classes = self.config.num_classes
         transform_train = transforms.Compose([
             transforms.Resize((32, 32)),
             transforms.RandomCrop(32, padding=4),
@@ -230,7 +229,7 @@ class Helper:
             transforms=transform_train, min_width=0)
         self.test_dataset = GTSRB(
             self.config.data_folder, train=False,
-            transforms=transform_train, min_width=0)
+            transforms=transform_test, min_width=0)
         
         indices_per_participant = self.sample_dirichlet_train_data(
             self.config.num_total_participants,
