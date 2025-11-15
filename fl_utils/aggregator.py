@@ -13,7 +13,7 @@ from models.resnet import ResNet18
 import copy
 import os
 from sklearn.cluster import DBSCAN
-from .defense import AddNoise, WeightDiffClippingDefense, Krum, RLR, FLAME
+from .defense import AddNoise, WeightDiffClippingDefense, Krum, RLR, FLAME, RFA, Median, deepsight_aggregate_global_model, flare
 
 def fed_avg_aggregator(init_model, net_list, net_freq):
     weight_accumulator = {}
@@ -53,13 +53,17 @@ class Aggregator:
             self._defender = None
 
         elif self.helper.config.agg_method == "norm-clipping" or self.helper.config.agg_method == "norm-clipping-adaptive":
-            # self._defender = WeightDiffClippingDefense(norm_bound=1)
-            self._defender = WeightDiffClippingDefense(norm_bound=0.5)
+            if self.helper.config.dataset in ['cifar10', 'gtsrb', 'cifar100']:
+                self._defender = WeightDiffClippingDefense(norm_bound=1)
+            elif self.helper.config.dataset in ['mnist', 'fmnist']:
+                self._defender = WeightDiffClippingDefense(norm_bound=0.5)
 
         elif self.helper.config.agg_method == "weak-dp":
             # doesn't really add noise. just clips
-            # self._defender = WeightDiffClippingDefense(norm_bound=2)
-            self._defender = WeightDiffClippingDefense(norm_bound=0.8)
+            if self.helper.config.dataset in ['cifar10', 'gtsrb', 'cifar100']:
+                self._defender = WeightDiffClippingDefense(norm_bound=2)
+            elif self.helper.config.dataset in ['mnist', 'fmnist']:
+                self._defender = WeightDiffClippingDefense(norm_bound=0.8)
 
         elif self.helper.config.agg_method == "krum":
             self._defender = Krum(mode='krum', num_workers=self.helper.config.num_sampled_participants, num_adv=self.helper.config.num_adversaries)
@@ -75,14 +79,17 @@ class Aggregator:
                 'clip': 0,
                 'server_lr': 1.0,
             }
-            theta = 5
+            theta = 2
             self._defender = RLR(n_params=pytorch_total_params, args=args_rlr, robustLR_threshold=theta)
-        
-        elif self.helper.config.agg_method == "flmae":
-            self._defender = FLAME(num_workers=self.helper.config.num_sampled_participants)
 
         elif self.helper.config.agg_method == "rfa":
-            NotImplementedError("Unsupported defense method !")
+            self._defender = RFA()
+
+        elif self.helper.config.agg_method == 'median':
+            self._defender = Median()
+
+        elif self.helper.config.agg_method == "flmae":
+            self._defender = FLAME(num_workers=self.helper.config.num_sampled_participants)
 
         elif self.helper.config.agg_method == "crfl":
             NotImplementedError("Unsupported defense method !")
@@ -134,21 +141,54 @@ class Aggregator:
         elif self.helper.config.agg_method == 'flmae':
             net_list, net_freq, median = self._defender.exec(global_model=net_avg, client_models=net_list)
         
-        elif self.helper.config.agg_method == 'Median':
-            pass
-        elif self.helper.config.agg_method == 'Trimmed-Mean':
-            pass
-        
+        elif self.helper.config.agg_method == 'rfa':
+            net_list, net_freq = self._defender.exec(client_models=net_list,
+                                                    net_freq=net_freq,
+                                                    maxiter=500,
+                                                    eps=1e-5,
+                                                    ftol=1e-7,
+                                                    device='cuda')
+
+
+        elif self.helper.config.agg_method == 'median':
+            net_list, net_freq = self._defender.exec(client_models=net_list,
+                                                     net_freq=net_freq)
+
+
+        elif self.helper.config.agg_method == 'deep-sight':
+            net_list, net_freq = deepsight_aggregate_global_model(net_avg, net_list, net_freq, list(range(len(net_list))))
+
+        elif self.helper.config.agg_method == 'flare':
+            w_glob = net_avg.state_dict()
+            w_locals = [net.state_dict() for net in net_list]
+            w_updates = [get_update(w, w_glob) for w in w_locals]
+            central_dataset = central_dataset_iid(self.helper.test_dataset, 200)
+            net_freq = flare(w_updates, w_locals, net_avg, central_dataset, self.helper.test_dataset, w_glob, self.helper)
+
         fed_avg_aggregator(net_avg, net_list, net_freq)
 
         if self.helper.config.agg_method == "weak-dp":
             # add noise to net_avg
-            # noise_adder = AddNoise(stddev=0.002)
-            noise_adder = AddNoise(stddev=0.001)
+            noise_adder = AddNoise(stddev=0.002)
             noise_adder.exec(client_model=net_avg)
+
         elif self.helper.config.agg_method == "flmae":
             lamda = 0.001
             std = median * lamda
             # add noise to net_avg
             noise_adder = AddNoise(stddev=std)
             noise_adder.exec(client_model=net_avg)
+
+
+def get_update(update, model):
+    '''get the update weight'''
+    update2 = {}
+    for key, var in update.items():
+        update2[key] = update[key] - model[key]
+    return update2
+
+def central_dataset_iid(dataset, dataset_size):
+    all_idxs = [i for i in range(len(dataset))]
+    central_dataset = set(np.random.choice(
+        all_idxs, dataset_size, replace=False))
+    return central_dataset

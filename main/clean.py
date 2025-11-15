@@ -53,7 +53,7 @@ def main():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-p', '--params', default = './configs/cifar10_poison.yaml')
+    parser.add_argument('-p', '--params', default = './configs/tinyimagenet_benign.yaml')
     parser.add_argument('-g', '--gpu', type=int, default = 0)
     parser.add_argument('--sweep', action = 'store_true')
     args = parser.parse_args()

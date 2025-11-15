@@ -2,6 +2,10 @@ import torch
 import numpy as np
 import hdbscan
 import copy
+from torch.nn.utils import vector_to_parameters, parameters_to_vector
+from .utils import LocalUpdate
+from sklearn.cluster import DBSCAN
+
 
 def vectorize_net(net):
     return torch.cat([p.view(-1) for p in net.parameters()])
@@ -241,3 +245,258 @@ class FLAME(Defense):
         client_models = uploaded_models
         uploaded_weights = [1 / l] * l
         return client_models, uploaded_weights, median
+
+
+class RFA(Defense):
+    """
+    we implement the robust aggregator at: 
+    https://arxiv.org/pdf/1912.13445.pdf
+    the code is translated from the TensorFlow implementation: 
+    https://github.com/krishnap25/RFA/blob/01ec26e65f13f46caf1391082aa76efcdb69a7a8/models/model.py#L264-L298
+    """
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def exec(self, client_models, net_freq,
+             maxiter=4, eps=1e-5,
+             ftol=1e-6, device=torch.device("cuda"),
+             *args, **kwargs):
+        """Computes geometric median of atoms with weights alphas using Weiszfeld's Algorithm
+        """
+        alphas = torch.tensor(net_freq, dtype=torch.float32, device=device)
+        vectorize_nets = [vectorize_net(cm).detach() for cm in client_models]
+        median = self.weighted_average_oracle(vectorize_nets, alphas)
+
+        num_oracle_calls = 1
+
+        # logging
+        obj_val = self.geometric_median_objective(median=median, points=vectorize_nets, alphas=alphas)
+
+        logs = []
+        log_entry = [0, obj_val, 0, 0]
+        logs.append("Tracking log entry: {}".format(log_entry))
+        print ('Starting Weiszfeld algorithm')
+        print (log_entry)
+
+        # start
+        for i in range(maxiter):
+            prev_median, prev_obj_val = median, obj_val
+            weights = torch.tensor([alpha / max(eps, self.l2dist(median, p)) for alpha, p in zip(alphas, vectorize_nets)],
+                                   dtype=alphas.dtype, device=device)
+            weights = weights / weights.sum()
+            median = self.weighted_average_oracle(vectorize_nets, weights)
+            num_oracle_calls += 1
+            obj_val = self.geometric_median_objective(median, vectorize_nets, alphas)
+            log_entry = [i+1, obj_val,
+                         (prev_obj_val - obj_val)/obj_val,
+                         self.l2dist(median, prev_median)]
+            logs.append(log_entry)
+            logs.append("Tracking log entry: {}".format(log_entry))
+            print ("#### Oracle Cals: {}, Objective Val: {}".format(num_oracle_calls, obj_val))
+            if abs(prev_obj_val - obj_val) < ftol * obj_val:
+                break
+        #logger.info("Num Oracale Calls: {}, Logs: {}".format(num_oracle_calls, logs))
+
+        aggregated_model = client_models[0]  # create a clone of the model
+        load_model_weight(aggregated_model, median.to(device))
+        neo_net_list = [aggregated_model]
+        neo_net_freq = [1.0]
+        return neo_net_list, neo_net_freq
+
+    def weighted_average_oracle(self, points, weights):
+        """Computes weighted average of atoms with specified weights
+        Args:
+            points: list, whose weighted average we wish to calculate
+                Each element is a list_of_torch.Tensor
+            weights: list of weights of the same length as atoms
+        """
+        tot_weights = weights.sum()
+        weighted_updates = torch.zeros(points[0].shape, dtype=points[0].dtype, device=points[0].device)
+        for w, p in zip(weights, points):
+            weighted_updates += (w * p / tot_weights)
+        return weighted_updates
+
+    def l2dist(self, p1, p2):
+        """L2 distance between p1, p2, each of which is a list of nd-arrays"""
+        return torch.norm(p1 - p2)
+
+    def geometric_median_objective(self, median, points, alphas):
+        """Compute geometric median objective."""
+        return torch.sum(torch.stack([alpha * self.l2dist(median, p) for alpha, p in zip(alphas, points)]))
+
+
+class Median:
+    def __init__(self):
+        pass
+
+    def exec(self, client_models, net_freq):
+        vectorize_models = [vectorize_net(model).clone().detach() for model in client_models]
+        stacked_vector = torch.stack(vectorize_models)
+        median_vector = torch.median(stacked_vector, dim=0)[0]
+        aggregated_model = client_models[0]
+        load_model_weight(aggregated_model, median_vector)
+        return [aggregated_model], [1.0]
+
+def kernel_function(x, y, sigma=1.0):
+    # 向量化计算核函数：x.shape=(m,d), y.shape=(n,d) -> 输出 (m,n)
+    pairwise_dist = torch.cdist(x, y, p=2)  # 计算欧氏距离矩阵 (m,n)
+    return torch.exp(-pairwise_dist ** 2 / (2 * sigma ** 2))
+
+def compute_mmd(x, y, sigma=1.0):
+    m, n = x.size(0), y.size(0)
+    # 计算核矩阵 (避免显式循环)
+    K_xx = kernel_function(x, x, sigma)  # (m,m)
+    K_yy = kernel_function(y, y, sigma)  # (n,n)
+    K_xy = kernel_function(x, y, sigma)  # (m,n)
+    
+    # 计算 MMD (排除对角线元素)
+    mmd = (K_xx.sum() - K_xx.diag().sum()) / (m * (m - 1)) + \
+          (K_yy.sum() - K_yy.diag().sum()) / (n * (n - 1)) - \
+          2 * K_xy.mean()
+    return mmd
+
+
+def flare(w_updates, w_locals, net, central_dataset, dataset_test, global_parameters, helper):
+    w_feature=[]
+    temp_model = copy.deepcopy(net)
+    cos = torch.nn.CosineSimilarity(dim=0, eps=1e-6).cuda()
+    for client in w_locals:
+        net.load_state_dict(client)
+        local = LocalUpdate(
+                helper=helper, dataset=dataset_test, idxs=central_dataset)
+        feature = local.get_PLR(
+            net=copy.deepcopy(net).cuda())
+        w_feature.append(feature)
+    distance_list=[[] for i in range(len(w_updates))]
+    # distance_list=[list(len(w_updates)) for i in range(len(w_updates))]
+    for i in range(len(w_updates)):
+        for j in range(i+1, len(w_updates)):
+            score = compute_mmd(w_feature[i], w_feature[j])
+            distance_list[i].append(score.item())
+            distance_list[j].append(score.item())
+    print('defense line121 distance_list', distance_list)
+    vote_counter=[0 for i in range(len(w_updates))]
+    k = round(len(w_updates)*0.5)
+    for i in range(len(w_updates)):
+        IDs = np.argsort(distance_list[i])
+        for j in range(len(IDs)):
+            # client_id is the index of client i-th client voting for
+            # distance_list[] only records score with other clients without itself
+            # so distance_list[i][i] should be itself
+            # client_id = j + 1 after j >= i
+            if IDs[j] >= i:
+                client_id = IDs[j] + 1 
+            else:
+                client_id = IDs[j]
+            vote_counter[client_id] += 1
+            if j + 1 >= k:  # first 𝑘 elements in 𝐼 𝐷𝑠 and vote for it
+                break
+
+    trust_score = [x/sum(vote_counter) for x in vote_counter]
+    # print('defense line188 len trust_score', trust_score)
+    return trust_score
+
+
+def deepsight_aggregate_global_model(net_glob, clients, net_freq, chosen_ids):
+    def ensemble_cluster(neups, ddifs, biases):
+        biases = np.array([bias.cpu().numpy() for bias in biases])
+        #neups = np.array([neup.cpu().numpy() for neup in neups])
+        #ddifs = np.array([ddif.cpu().detach().numpy() for ddif in ddifs])
+        N = len(neups)
+        # use bias to conduct DBSCAM
+        # biases= np.array(biases)
+        cosine_labels = DBSCAN(min_samples=3,metric='cosine').fit(biases).labels_
+        print("cosine_cluster:{}".format(cosine_labels))
+        # neups=np.array(neups)
+        neup_labels = DBSCAN(min_samples=3).fit(neups).labels_
+        print("neup_cluster:{}".format(neup_labels))
+        ddif_labels = DBSCAN(min_samples=3).fit(ddifs).labels_
+        print("ddif_cluster:{}".format(ddif_labels))
+
+        dists_from_cluster = np.zeros((N, N))
+        for i in range(N):
+            for j in range(i, N):
+                dists_from_cluster[i, j] = (int(cosine_labels[i] == cosine_labels[j]) + int(
+                    neup_labels[i] == neup_labels[j]) + int(ddif_labels[i] == ddif_labels[j]))/3.0
+                dists_from_cluster[j, i] = dists_from_cluster[i, j]
+                
+        print("dists_from_clusters:")
+        print(dists_from_cluster)
+        ensembled_labels = DBSCAN(min_samples=3,metric='precomputed').fit(dists_from_cluster).labels_
+
+        return ensembled_labels
+    
+    global_weight = list(net_glob.state_dict().values())[-2]
+    global_bias = list(net_glob.state_dict().values())[-1]
+
+    biases = [(list(clients[i].state_dict().values())[-1] - global_bias) for i in chosen_ids]
+    weights = [list(clients[i].state_dict().values())[-2] for i in chosen_ids]
+
+    n_client = len(chosen_ids)
+    cosine_similarity_dists = np.array((n_client, n_client))
+    neups = list()
+    n_exceeds = list()
+
+    # calculate neups
+    sC_nn2 = 0
+    for i in range(len(chosen_ids)):
+        C_nn = torch.sum(weights[i]-global_weight, dim=[1]) + biases[i]-global_bias
+        # print("C_nn:",C_nn)
+        C_nn2 = C_nn * C_nn
+        neups.append(C_nn2)
+        sC_nn2 += C_nn2
+        
+        C_max = torch.max(C_nn2).item()
+        threshold = 0.01 * C_max if 0.01 > (1 / len(biases)) else 1 / len(biases) * C_max
+        n_exceed = torch.sum(C_nn2 > threshold).item()
+        n_exceeds.append(n_exceed)
+    # normalize
+    neups = np.array([(neup/sC_nn2).cpu().numpy() for neup in neups])
+    print("n_exceeds:{}".format(n_exceeds))
+    # 256 can be replaced with smaller value
+    rand_input = torch.randn((256, 3, 32, 32)).cuda()
+
+    global_ddif = torch.mean(torch.softmax(net_glob(rand_input), dim=1), dim=0)
+    # print("global_ddif:{} {}".format(global_ddif.size(),global_ddif))
+    client_ddifs = [torch.mean(torch.softmax(clients[i](rand_input), dim=1), dim=0)/ global_ddif
+                    for i in chosen_ids]
+    client_ddifs = np.array([client_ddif.cpu().detach().numpy() for client_ddif in client_ddifs])
+    # print("client_ddifs:{}".format(client_ddifs[0]))
+
+    # use n_exceed to label
+    classification_boundary = np.median(np.array(n_exceeds)) / 2
+    
+    identified_mals = [int(n_exceed <= classification_boundary) for n_exceed in n_exceeds]
+    print("identified_mals:{}".format(identified_mals))
+    clusters = ensemble_cluster(neups, client_ddifs, biases)
+    print("ensemble clusters:{}".format(clusters))
+    cluster_ids = np.unique(clusters)
+
+    deleted_cluster_ids = list()
+    for cluster_id in cluster_ids:
+        n_mal = 0
+        cluster_size = np.sum(cluster_id == clusters)
+        for identified_mal, cluster in zip(identified_mals, clusters):
+            if cluster == cluster_id and identified_mal:
+                n_mal += 1
+        print("cluser size:{} n_mal:{}".format(cluster_size,n_mal))        
+        if (n_mal / cluster_size) >= (1 / 3):
+            deleted_cluster_ids.append(cluster_id)
+    # print("deleted_clusters:",deleted_cluster_ids)
+    temp_chosen_ids = copy.deepcopy(chosen_ids)
+    for i in range(len(chosen_ids)-1, -1, -1):
+        # print("cluster tag:",clusters[i])
+        if clusters[i] in deleted_cluster_ids:
+            del chosen_ids[i]
+
+    print("final clients length:{}".format(len(chosen_ids)))
+    if len(chosen_ids)==0:
+        chosen_ids = temp_chosen_ids
+    
+    net_freq = [0] * len(net_freq)
+    for i in chosen_ids:
+        net_freq[i] = 1/len(chosen_ids)
+
+    return clients, net_freq
+

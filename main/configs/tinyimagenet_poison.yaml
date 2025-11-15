@@ -1,18 +1,18 @@
 program: clean.py
 method: grid
-name: gtsrb_train
+name: tinyimagenet_train
 metric:
     name: acc
     goal: maximize
 parameters:
     attacker_method:
-        value: ['CerP_MT']
+        value: ['MasterKey']
     seed:
         value: 0
     dataset:
-        value: gtsrb
+        value: tiny-imagenet
     num_classes:
-        value: 43
+        value: 200
     lr_method:
         values: ['fix-lr']
     lr:
@@ -32,15 +32,15 @@ parameters:
     num_worker:
         value: 8
     poison_start_epoch:
-        values: 1899
+        values: 1799
     epochs:
-        values: 1900
+        values: [300]
     poison_epochs:
-        values: 100
+        values: 300
     num_total_participants:
         value: 100
     num_adversaries:
-        values: [1]
+        values: [5]
     num_sampled_participants:
         value: 10
     sample_method:
@@ -50,27 +50,29 @@ parameters:
     retrain_times:
         values: 2
     is_poison:
-        value: false
+        value: True
     attacker_retrain_times:
         values: 2
     save_every:
         value: 100
     atk_model_epochs:
-        value: [100]
+        value: [50]
     atk_model_lr:
         value: [0.0001]
-    eps:
-        value: [0.05]
     original_eps:
-        value: [0.3]
+        value: [0.15]
     agg_method:
-        values: ['flare']
+        values: ['avg']
     bkd_ratio:
         values: 0.5
     load_benign_model:
-        values: False
+        values: True
     save_imgs:
         values: [False]
     eval_mode:
         values: ['random']
 # random or target
+    a3fl_k:
+        values: 5
+    cerp_k:
+        values: 5

@@ -1,22 +1,26 @@
-program: benign_train.py
+program: clean.py
 method: grid
-name: clean
+name: country211_train
 metric:
     name: acc
     goal: maximize
 parameters:
-    dataset:
-        value: cifar10
+    attacker_method:
+        value: ['MasterKey']
     seed:
         value: 0
+    dataset:
+        value: country211
+    num_classes:
+        value: 211
+    lr_method:
+        values: ['fix-lr']
     lr:
         values: [0.01]
-    gamma:
-        values: [1]
-    lr_method:
-        values: ['linear']
     target_lr:
         values: [0.02]
+    gamma:
+        values: [1]
     momentum: 
         values: [0.9]
     decay: 
@@ -26,16 +30,13 @@ parameters:
     test_batch_size:
         values: [1024]
     num_worker:
-        value: 4
+        value: 8
     poison_start_epoch:
-# poison_start_epoch作为参考使用，并不作为实验参数
-        values: [1900]
+        values: 1899
     epochs:
-# 总训练epochs
-        values: [1900]
+        values: 1900
     poison_epochs:
-# 总投毒epochs
-        values: [100]
+        values: 100
     num_total_participants:
         value: 100
     num_adversaries:
@@ -43,29 +44,33 @@ parameters:
     num_sampled_participants:
         value: 10
     sample_method:
-        values: ['random']
-    sample_poison_ratio:
-        values: [0]
+        values: 'fix'
     dirichlet_alpha:
-        values: [0.9]
+        values: 0.9
     retrain_times:
-        values: [2]
+        values: 2
     is_poison:
         value: false
     attacker_retrain_times:
-        values: [2]
+        values: 2
     save_every:
         value: 100
-    trigger_size:
-        values: [5]
+    atk_model_epochs:
+        value: [100]
+    atk_model_lr:
+        value: [0.0001]
+    eps:
+        value: [0.05]
+    original_eps:
+        value: [0.3]
     agg_method:
         values: ['avg']
-    clip_factor:
-        values: [1]
-    target_class:
-        values: [2]
     bkd_ratio:
-        values: [0.25]
+        values: 0.5
     load_benign_model:
-        values: [false]
-    
+        values: False
+    save_imgs:
+        values: [False]
+    eval_mode:
+        values: ['random']
+# random or target

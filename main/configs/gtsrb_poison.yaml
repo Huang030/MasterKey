@@ -6,7 +6,8 @@ metric:
     goal: maximize
 parameters:
     attacker_method:
-        value: ['CerP_MT']
+        value: ['PGD_MT']
+# MasterKey A3FL_MT CerP_MT Neu_MT PGD_MT
     seed:
         value: 0
     dataset:
@@ -32,9 +33,9 @@ parameters:
     num_worker:
         value: 8
     poison_start_epoch:
-        values: 1899
+        values: 1799
     epochs:
-        values: 1900
+        values: [100]
     poison_epochs:
         values: 100
     num_total_participants:
@@ -50,27 +51,29 @@ parameters:
     retrain_times:
         values: 2
     is_poison:
-        value: false
+        value: True
     attacker_retrain_times:
         values: 2
     save_every:
         value: 100
     atk_model_epochs:
-        value: [100]
+        value: [50]
     atk_model_lr:
         value: [0.0001]
-    eps:
-        value: [0.05]
     original_eps:
-        value: [0.3]
+        value: [0.15]
     agg_method:
         values: ['flare']
     bkd_ratio:
         values: 0.5
     load_benign_model:
-        values: False
+        values: True
     save_imgs:
         values: [False]
     eval_mode:
         values: ['random']
 # random or target
+    a3fl_k:
+        values: 5
+    cerp_k:
+        values: 5
